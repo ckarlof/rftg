@@ -1,9 +1,9 @@
 /*
  * Race for the Galaxy AI
  *
- * Copyright (C) 2009-2011 Keldon Jones
+ * Copyright (C) 2009-2015 Keldon Jones
  *
- * Source file modified by B. Nordli, August 2014.
+ * Source file modified by B. Nordli, August 2015.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -7403,6 +7403,7 @@ static void ai_choose_consume_hand(game *g, int who, int c_idx, int o_idx,
  */
 static void ai_choose_good_aux(game *g, int who, int list[], int n, int c,
                                int chosen, int c_idx, int o_idx,
+                               int min, int max,
                                int *best, double *b_s)
 {
 	game sim;
@@ -7431,7 +7432,8 @@ static void ai_choose_good_aux(game *g, int who, int list[], int n, int c,
 		simulate_game(&sim, g, who);
 
 		/* Apply choice */
-		if (!good_chosen(&sim, who, c_idx, o_idx, consume, num_consume))
+		if (!good_chosen(&sim, who, c_idx, o_idx, min, max,
+		                 consume, num_consume))
 		{
 			/* Illegal choice */
 			return;
@@ -7454,12 +7456,12 @@ static void ai_choose_good_aux(game *g, int who, int list[], int n, int c,
 
 	/* Try without current good */
 	ai_choose_good_aux(g, who, list, n - 1, c, chosen << 1, c_idx, o_idx,
-	                   best, b_s);
+	                   min, max, best, b_s);
 
 	/* Try with current good (if more can be chosen) */
 	if (c) ai_choose_good_aux(g, who, list, n - 1, c - 1,
 	                          (chosen << 1) + 1, c_idx, o_idx,
-	                           best, b_s);
+	                          min, max, best, b_s);
 }
 
 /*
@@ -7501,7 +7503,7 @@ static void ai_choose_good(game *g, int who, int c_idx, int o_idx,
 	{
 		/* Find best set of goods */
 		ai_choose_good_aux(g, who, goods, *num, c, 0, c_idx, o_idx,
-		                   &best, &b_s);
+		                   min, max, &best, &b_s);
 	}
 
 	/* Check for failure */

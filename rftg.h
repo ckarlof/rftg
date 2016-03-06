@@ -1,9 +1,9 @@
 /*
  * Race for the Galaxy AI
  *
- * Copyright (C) 2009 Keldon Jones
+ * Copyright (C) 2009-2015 Keldon Jones
  *
- * Source file modified by B. Nordli, August 2014.
+ * Source file modified by B. Nordli, August 2015.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@
 #endif
 
 #ifndef RELEASE
-#define RELEASE VERSION
+#define RELEASE VERSION "q"
 #endif
 
 #include <stdio.h>
@@ -138,6 +138,7 @@
 /*
  * Player action choices.
  */
+#define ACT_GAME_START     -2
 #define ACT_ROUND_START    -1
 #define ACT_SEARCH         0
 #define ACT_EXPLORE_5_0    1
@@ -550,7 +551,15 @@
 #define CHOICE_SEARCH_KEEP      23
 #define CHOICE_OORT_KIND        24
 
-#define CHOICE_DEBUG            -10
+/*
+ * Debug choices are negative
+ */
+#define CHOICE_D_MOVE           -10
+#define CHOICE_D_SHUFFLE        -11
+#define CHOICE_D_TAKE_CARD      -12
+#define CHOICE_D_TAKE_VP        -13
+#define CHOICE_D_TAKE_PRESTIGE  -14
+#define CHOICE_D_ROTATE         -15
 
 
 /*
@@ -889,6 +898,12 @@ typedef struct game
 	/* Game is a simulation */
 	int8_t simulation;
 
+	/* Whether game is a debug game or not */
+	int8_t debug_game;
+
+	/* Number of debug rotations since last check */
+	int8_t debug_rotate;
+
 	/* Who initiated the simulation */
 	int8_t sim_who;
 
@@ -1063,17 +1078,16 @@ extern void auto_export(void);
 extern int game_rand(game *g);
 extern int read_cards(char *suggestion);
 extern void read_campaign(void);
+extern campaign *find_campaign(char *name);
 extern void apply_campaign(game *g);
 extern void init_game(game *g);
 extern int simple_rand(unsigned int *seed);
 extern int next_choice(int* log, int pos);
-extern void perform_debug_moves(game *g, int who);
 extern int count_player_area(game *g, int who, int where);
 extern int count_active_flags(game *g, int who, int flags);
 extern int player_has(game *g, int who, design *d_ptr);
 extern int player_chose(game *g, int who, int act);
 extern int prestige_on_tile(game *g, int who);
-extern int random_draw(game *g);
 extern int first_draw(game *g);
 extern void move_card(game *g, int which, int who, int where);
 extern void move_start(game *g, int which, int who, int where);
@@ -1084,7 +1098,8 @@ extern void clear_temp(game *g);
 extern void gain_prestige(game *g, int who, int amt, char *reason);
 extern void spend_prestige(game *g, int who, int amt);
 extern void check_prestige(game *g);
-extern int get_goods(game *g, int who, int goods[], int type);
+extern int has_good(game *g, int who, int type);
+extern int count_goods(game *g, int who, int type);
 extern void discard_callback(game *g, int who, int list[], int num);
 extern void discard_to(game *g, int who, int to, int discard_any);
 extern int get_powers(game *g, int who, int phase, power_where *w_list);
@@ -1112,7 +1127,7 @@ extern int takeover_callback(game *g, int special, int world);
 extern int settle_check_takeover(game *g, int who, card *extra, int no_ask);
 extern int upgrade_chosen(game *g, int who, int replacement, int old);
 extern void settle_finish(game *g, int who, int world, int mil_only,
-			  int special, int mil_bonus);
+			  int special, int mil_bonus_or_takeover_power);
 extern void settle_extra(game *g, int who, int world);
 extern int defend_callback(game *g, int who, int deficit, int list[], int num,
                            int special[], int num_special);
@@ -1123,8 +1138,10 @@ extern void phase_settle(game *g);
 extern int trade_value(game *g, int who, card *c_ptr, int type, int no_bonus);
 extern void trade_chosen(game *g, int who, int which, int no_bonus);
 extern void trade_action(game *g, int who, int no_bonus, int phase_bonus);
-extern int good_chosen(game *g, int who, int c_idx, int o_idx, int g_list[],
-                       int num);
+extern int goods_legal(game *g, int who, int c_idx, int o_idx, int min, int max,
+                       int g_list[], int num);
+extern int good_chosen(game *g, int who, int c_idx, int o_idx, int min, int max,
+                       int g_list[], int num);
 extern int consume_hand_chosen(game *g, int who, int c_idx, int o_idx,
                                int list[], int n);
 extern void consume_prestige_chosen(game *g, int who, int c_idx, int o_idx);
@@ -1167,5 +1184,6 @@ extern char *xml_escape(const char *s);
 extern int export_game(game *g, char *filename, char *style_sheet,
                        char *server, int player_us, const char *message,
                        int num_special, card** special_cards,
+                       int export_card_locations,
                        void (*export_log)(FILE *fff, int gid),
                        void (*export_callback)(FILE *fff, int gid), int gid);

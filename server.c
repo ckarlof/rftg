@@ -1,9 +1,9 @@
 /*
  * Race for the Galaxy AI
  *
- * Copyright (C) 2009-2011 Keldon Jones
+ * Copyright (C) 2009-2015 Keldon Jones
  *
- * Source file modified by B. Nordli, August 2014.
+ * Source file modified by B. Nordli, August 2015.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1021,7 +1021,7 @@ static void db_save_results(int sid)
 
 	/* Export game to file */
 	if (export_game(&s_ptr->g, filename, export_style_sheet, server_name,
-	    -1, NULL, 0, NULL, export_log, NULL, s_ptr->gid) < 0)
+	    -1, NULL, 0, NULL, 1, export_log, NULL, s_ptr->gid) < 0)
 	{
 		/* Log error */
 		server_log("Could not export game to %s", filename);
@@ -1145,7 +1145,7 @@ static void replay_messages(int gid, int cid)
 		else
 		{
 			/* Create log message */
-			start_msg(&ptr, MSG_LOG);
+			start_msg(&ptr, MSG_LOG_FORMAT);
 
 			/* Add text of message */
 			put_string(row[0], &ptr);
@@ -1345,8 +1345,10 @@ static void send_player_one(int dest, int who)
 	else
 	{
 		/* Send "new player" message */
-		send_msgf(dest, MSG_PLAYER_NEW, "sd", c_list[who].user,
-		          c_list[who].state == CS_PLAYING);
+		send_msgf(dest, MSG_PLAYER_NEW, "sdd",
+		          c_list[who].user,
+		          c_list[who].state == CS_PLAYING,
+		          dest == who);
 	}
 }
 
@@ -1575,6 +1577,14 @@ void message_add(game *g, char *txt)
 void message_add_formatted(game *g, char *txt, char *tag)
 {
 	char msg[1024], *ptr = msg;
+
+	/* Check for no tag */
+	if (!tag || !strlen(tag))
+	{
+		/* Add unformatted message */
+		message_add(g, txt);
+		return;
+	}
 
 	/* Save message to db */
 	db_save_message(g->session_id, -1, txt, tag);
@@ -2481,7 +2491,7 @@ static void kick_player(int cid, char *reason)
 		update_waiting(sid);
 
 		/* Check for kick timeout */
-		if (kick_timeout)
+		if (kick_timeout && !c_list[cid].ai)
 		{
 			/* Format time to AI control message */
 			sprintf(text, "%s will be set to AI control in %d seconds.",
@@ -2566,7 +2576,7 @@ static void handle_choice(int cid, char *ptr, int size)
 		type = get_integer(&ptr);
 
 		/* Check whether we got a real choice */
-		got_choice |= (type != CHOICE_DEBUG);
+		got_choice |= (type >= 0);
 
 		/* Copy choice type to log */
 		*l_ptr++ = type;
@@ -2575,7 +2585,7 @@ static void handle_choice(int cid, char *ptr, int size)
 		server_log("S:%d P:%d Received choice type %d position %d from %d, current size is %d.", sid, who, *(l_ptr - 1), pos, cid, p_ptr->choice_size);
 
 		/* Check for debug choice */
-		if (type == CHOICE_DEBUG && !debug_server)
+		if (type < 0 && !debug_server)
 		{
 			/* Kick player */
 			kick_player(cid, "This server does not accept debug message");
@@ -2741,13 +2751,17 @@ void server_private_message(game *g, int who, char *txt, char *tag)
 	if (cid < 0) return;
 
 	/* Create log message */
-	start_msg(&ptr, MSG_LOG);
+	start_msg(&ptr, tag ? MSG_LOG_FORMAT : MSG_LOG);
 
 	/* Add text of message */
 	put_string(txt, &ptr);
 
-	/* Add format of message */
-	put_string(tag, &ptr);
+	/* Check for formatted message */
+	if (tag)
+	{
+		/* Add format of message */
+		put_string(tag, &ptr);
+	}
 
 	/* Finish message */
 	finish_msg(msg, ptr);
@@ -4592,6 +4606,8 @@ int main(int argc, char *argv[])
 	time_t last_housekeep = 0;
 	int port = 16309;
 	char *db = "rftg";
+	char *db_user = "rftg";
+	char *db_pw = NULL;
 
 	/* Parse arguments */
 	for (i = 1; i < argc; i++)
@@ -4604,6 +4620,8 @@ int main(int argc, char *argv[])
 			printf("Arguments:\n");
 			printf("  -p     Port number to listen to. Default: 16309\n");
 			printf("  -d     MySQL database name. Default: \"rftg\"\n");
+			printf("  -u     MySQL database user. Default: \"rftg\"\n");
+			printf("  -pw    MySQL database password. Default: [none]\n");
 			printf("  -t     Client timeout in seconds. 0 means do not kick players. Default: 60\n");
 			printf("  -k     Timeout to replace players with A.I. in ticks (%d seconds).\n", tick_size);
 			printf("            0 means do not replace players. Default: 30\n");
@@ -4630,6 +4648,20 @@ int main(int argc, char *argv[])
 		{
 			/* Set database name */
 			db = argv[++i];
+		}
+
+		/* Check for database user */
+		if (!strcmp(argv[i], "-u"))
+		{
+			/* Set database user */
+			db_user = argv[++i];
+		}
+
+		/* Check for database password */
+		if (!strcmp(argv[i], "-pw"))
+		{
+			/* Set database password */
+			db_pw = argv[++i];
 		}
 
 		/* Check for timeout settings */
@@ -4702,7 +4734,7 @@ int main(int argc, char *argv[])
 	}
 
 	/* Attempt to connect to database server */
-	if (!mysql_real_connect(mysql, NULL, "rftg", NULL, db, 0, NULL, 0))
+	if (!mysql_real_connect(mysql, NULL, db_user, db_pw, db, 0, NULL, 0))
 	{
 		/* Print error and exit */
 		server_log("Database connection: %s", mysql_error(mysql));

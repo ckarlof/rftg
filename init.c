@@ -1,9 +1,9 @@
 /*
  * Race for the Galaxy AI
  *
- * Copyright (C) 2009-2011 Keldon Jones
+ * Copyright (C) 2009-2015 Keldon Jones
  *
- * Source file modified by B. Nordli, August 2014.
+ * Source file modified by B. Nordli, August 2015.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -938,6 +938,34 @@ static void init_campaign(game *g)
 }
 
 /*
+ * Find a campaign, or return NULL if campaign is unknown.
+ */
+campaign *find_campaign(char *campaign_name)
+{
+	int i;
+
+	/* Check for no campaign set */
+	if (!campaign_name)
+	{
+		return NULL;
+	}
+
+	/* Loop over available campaigns */
+	for (i = 0; i < num_campaign; i++)
+	{
+		/* Check for match */
+		if (!strcmp(campaign_name, camp_library[i].name))
+		{
+			/* Return campaign */
+			return &camp_library[i];
+		}
+	}
+
+	/* Return no match. */
+	return NULL;
+}
+
+/*
  * Apply campaign options to game.
  */
 void apply_campaign(game *g)
@@ -980,6 +1008,12 @@ void init_game(game *g)
 	/* Game is not simulated */
 	g->simulation = 0;
 
+	/* Game is not a debug game */
+	g->debug_game = 0;
+
+	/* No rotation */
+	g->debug_rotate = 0;
+
 	/* Set size of VP pool */
 	g->vp_pool = g->num_players * 12;
 
@@ -989,8 +1023,8 @@ void init_game(game *g)
 	/* No game round yet */
 	g->round = 0;
 
-	/* No phase or turn */
-	g->cur_action = ACT_ROUND_START;
+	/* Start of game */
+	g->cur_action = ACT_GAME_START;
 	g->turn = 0;
 
 	/* Clear selected actions */

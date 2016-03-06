@@ -15,6 +15,47 @@
 #define RESTART_CURRENT    12
 
 /*
+ * Column ids of lobby game list.
+ */
+#define GAME_COL_ID                0
+#define GAME_COL_DESC_NAME         1
+#define GAME_COL_DESC_NAME_CMP     2
+#define GAME_COL_CREATOR_OFFLINE   3
+#define GAME_COL_CREATOR_CMP       4
+#define GAME_COL_PASSWORD          5
+#define GAME_COL_MIN_PLAYERS       6
+#define GAME_COL_MAX_PLAYERS       7
+#define GAME_COL_PLAYERS_STR       8
+#define GAME_COL_EXPANSION         9
+#define GAME_COL_EXPANSION_STR    10
+#define GAME_COL_ADVANCED         11
+#define GAME_COL_DISABLE_GOAL     12
+#define GAME_COL_DISABLE_TO       13
+#define GAME_COL_NO_TIMEOUT       14
+#define GAME_COL_SELF             15
+#define GAME_COL_CHECK_VISIBLE    16
+#define GAME_COL_WEIGHT           17
+#define GAME_MAX_COLUMN           18
+
+/*
+ * Column ids of lobby player list.
+ */
+#define PLAYER_COL_USERNAME        0
+#define PLAYER_COL_USERNAME_CMP    1
+#define PLAYER_COL_IN_GAME         2
+#define PLAYER_COL_WEIGHT          3
+#define PLAYER_MAX_COLUMN          4
+
+/*
+ * Column ids of debug cards list.
+ */
+#define DEBUG_COL_CARD_ID          0
+#define DEBUG_COL_CARD_NAME        1
+#define DEBUG_COL_OWNER            2
+#define DEBUG_COL_LOCATION         3
+#define DEBUG_MAX_COLUMN           4
+
+/*
  * User options.
  */
 typedef struct options
@@ -79,6 +120,9 @@ typedef struct options
 	/* Server port */
 	int server_port;
 
+	/* Previous server names */
+	GtkListStore *servers;
+
 	/* Username to connect as */
 	char *username;
 
@@ -107,11 +151,11 @@ typedef struct options
 	/* Autosave */
 	int auto_save;
 
+	/* Export card locations */
+	int export_cards;
+
 	/* Export game at end of game */
 	int auto_export;
-
-	/* Colored log */
-	int colored_log;
 
 	/* Verbose log */
 	int verbose_log;
@@ -148,11 +192,12 @@ extern game real_game;
 extern int player_us;
 extern int restart_loop;
 
-extern int client_state;
+extern int client_state, playing_game, making_choice;
 extern char server_version[30];
 extern int debug_server;
 extern int waiting_player[MAX_PLAYER];
 
+extern char *create_cmp_key(char *str);
 extern void save_prefs(void);
 extern void reset_cards(game *g, int color_hand, int color_table);
 extern void reset_status(game *g, int who);
@@ -165,7 +210,7 @@ extern void redraw_everything(void);
 extern void modify_gui(int reset_card);
 extern void reset_gui(void);
 extern void switch_view(int lobby, int chat);
-extern void gui_client_state_changed(int playing_game, int making_choice);
+extern void update_menu_items();
 
 extern void game_view_changed(GtkTreeView *view, gpointer data);
 extern void send_chat(GtkEntry *entry, gpointer data);

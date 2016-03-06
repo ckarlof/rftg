@@ -1,9 +1,9 @@
 /*
  * Race for the Galaxy AI
  *
- * Copyright (C) 2009-2011 Keldon Jones
+ * Copyright (C) 2009-2015 Keldon Jones
  *
- * Source file modified by B. Nordli, August 2014.
+ * Source file modified by B. Nordli, August 2015.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -41,6 +41,16 @@ static GSource *server_src;
 int client_state = CS_DISCONN;
 
 /*
+ * We are currently playing in a game.
+ */
+int playing_game;
+
+/*
+ * We are currently making a choice.
+ */
+int making_choice;
+
+/*
  * The version of the server we are connected to.
  */
 char server_version[30];
@@ -61,19 +71,9 @@ static int client_sid = -1;
 static int connect_dialog_closed;
 
 /*
- * We are currently playing in a game.
- */
-static int playing_game;
-
-/*
  * Widgets used in multiple functions.
  */
 static GtkWidget *login_status;
-
-/*
- * We are currently making a choice.
- */
-static int making_choice;
 
 /*
  * Prevent displayed card updates until server catches up with us.
@@ -155,8 +155,10 @@ static gboolean delete_user(GtkTreeModel *model, GtkTreePath *path,
 {
 	char *ptr;
 
-	/* Get first column */
-	gtk_tree_model_get(model, iter, 0, &ptr, -1);
+	/* Get user name */
+	gtk_tree_model_get(model, iter,
+	                   PLAYER_COL_USERNAME, &ptr,
+	                   -1);
 
 	/* Check for match */
 	if (!strcmp(ptr, (char *)data))
@@ -188,7 +190,9 @@ static gboolean delete_game(GtkTreeModel *model, GtkTreePath *path,
 	int y;
 
 	/* Get first column */
-	gtk_tree_model_get(model, iter, 0, &y, -1);
+	gtk_tree_model_get(model, iter,
+	                   GAME_COL_ID, &y,
+	                   -1);
 
 	/* Check for match */
 	if (x == y)
@@ -201,6 +205,31 @@ static gboolean delete_game(GtkTreeModel *model, GtkTreePath *path,
 	}
 
 	/* No match, keep looking */
+	return FALSE;
+}
+
+/*
+ * Delete row from server list if it matches passed-in data.
+ */
+static gboolean delete_server(GtkTreeModel *model, GtkTreePath *path,
+                              GtkTreeIter *iter, gpointer data)
+{
+	char *ptr;
+
+	/* Get server */
+	gtk_tree_model_get(model, iter, 0, &ptr, -1);
+
+	/* Check for match */
+	if (!strcmp(ptr, (char *)data))
+	{
+		/* Delete row */
+		gtk_list_store_remove(GTK_LIST_STORE(model), iter);
+	}
+
+	/* Free copy of string */
+	g_free(ptr);
+
+	/* Keep looking */
 	return FALSE;
 }
 
@@ -257,7 +286,9 @@ static int find_game_iter(int id, GtkTreeIter *iter)
 	while (1)
 	{
 		/* Get first column */
-		gtk_tree_model_get(GTK_TREE_MODEL(game_list), iter, 0, &x, -1);
+		gtk_tree_model_get(GTK_TREE_MODEL(game_list), iter,
+		                   GAME_COL_ID, &x,
+		                   -1);
 
 		/* Check for match */
 		if (x == id) return 1;
@@ -290,7 +321,9 @@ static int find_game_player(GtkTreeIter *parent, GtkTreeIter *child, int who)
 	while (1)
 	{
 		/* Get player index column */
-		gtk_tree_model_get(GTK_TREE_MODEL(game_list), child, 0, &x, -1);
+		gtk_tree_model_get(GTK_TREE_MODEL(game_list), child,
+		                   GAME_COL_ID, &x,
+		                   -1);
 
 		/* Check for match */
 		if (x == who) return 1;
@@ -313,16 +346,14 @@ void game_view_changed(GtkTreeView *view, gpointer data)
 	GtkTreeIter game_iter, parent_iter;
 	int owned, minp, maxp, user = 1, self, nump;
 
-	/* Check for ability to join game */
-	gtk_widget_set_sensitive(join_button, client_sid == -1);
-
 	/* Check for ability to create game */
 	gtk_widget_set_sensitive(create_button, client_sid == -1);
 
 	/* Check for ability to leave game */
 	gtk_widget_set_sensitive(leave_button, client_sid != -1);
 
-	/* Assume no ability to start game or kick player */
+	/* Assume no ability to start, join, kick or add ai */
+	gtk_widget_set_sensitive(join_button, FALSE);
 	gtk_widget_set_sensitive(start_button, FALSE);
 	gtk_widget_set_sensitive(kick_button, FALSE);
 	gtk_widget_set_sensitive(addai_button, FALSE);
@@ -353,19 +384,26 @@ void game_view_changed(GtkTreeView *view, gpointer data)
 
 	/* Get game information */
 	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &parent_iter,
-	                   10, &owned, 12, &minp, 13, &maxp, -1);
+	                   GAME_COL_MIN_PLAYERS, &minp,
+	                   GAME_COL_MAX_PLAYERS, &maxp,
+	                   GAME_COL_SELF, &owned,
+	                   -1);
 
 	/* Check for user */
 	if (user)
 	{
 		/* Check whether cursor is on ourself */
 		gtk_tree_model_get(GTK_TREE_MODEL(game_list), &game_iter,
-		                   10, &self, -1);
+		                   GAME_COL_SELF, &self,
+		                   -1);
 	}
 
 	/* Get current number of players */
 	nump = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(game_list),
 	                                      &parent_iter);
+
+	/* Check for ability to join game */
+	gtk_widget_set_sensitive(join_button, client_sid == -1 && nump < maxp);
 
 	/* Check for ability to start game */
 	gtk_widget_set_sensitive(start_button, owned && nump >= minp);
@@ -385,6 +423,7 @@ static void handle_open_game(char *ptr)
 {
 	int x, y, new_game = FALSE;
 	char buf[1024];
+	char *cmp_key;
 	GtkTreeIter list_iter;
 
 	/* Read session ID */
@@ -397,7 +436,9 @@ static void handle_open_game(char *ptr)
 		gtk_tree_store_append(game_list, &list_iter, NULL);
 
 		/* Set ID in game tree */
-		gtk_tree_store_set(game_list, &list_iter, 0, x, -1);
+		gtk_tree_store_set(game_list, &list_iter,
+		                   GAME_COL_ID, x,
+		                   -1);
 
 		/* Remember game is new */
 		new_game = TRUE;
@@ -406,20 +447,40 @@ static void handle_open_game(char *ptr)
 	/* Read description */
 	get_string(buf, &ptr);
 
+	/* Create compare key */
+	cmp_key = create_cmp_key(buf);
+
 	/* Set description */
-	gtk_tree_store_set(game_list, &list_iter, 1, buf, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_DESC_NAME, buf,
+	                   GAME_COL_DESC_NAME_CMP, cmp_key,
+	                   -1);
+
+	/* Destroy compare key */
+	g_free(cmp_key);
 
 	/* Read creator username */
 	get_string(buf, &ptr);
 
+	/* Create compare key */
+	cmp_key = create_cmp_key(buf);
+
 	/* Set creator */
-	gtk_tree_store_set(game_list, &list_iter, 2, buf, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_CREATOR_OFFLINE, buf,
+	                   GAME_COL_CREATOR_CMP, cmp_key,
+	                   -1);
+
+	/* Destroy compare key */
+	g_free(cmp_key);
 
 	/* Read password required */
 	x = get_integer(&ptr);
 
-	/* Set password required */
-	gtk_tree_store_set(game_list, &list_iter, 3, x, -1);
+	/* Set game state */
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_PASSWORD, x,
+	                   -1);
 
 	/* Read min/max number of players */
 	x = get_integer(&ptr);
@@ -438,38 +499,59 @@ static void handle_open_game(char *ptr)
 	}
 
 	/* Set number of players */
-	gtk_tree_store_set(game_list, &list_iter, 4, buf, 12, x, 13, y, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_PLAYERS_STR, buf,
+	                   GAME_COL_MIN_PLAYERS, x,
+	                   GAME_COL_MAX_PLAYERS, y,
+	                   -1);
 
 	/* Read expansion level */
 	x = get_integer(&ptr);
 
-	/* Set expansion string */
-	gtk_tree_store_set(game_list, &list_iter, 5, exp_abbr[x], -1);
+	/* Set expansion */
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_EXPANSION, x,
+	                   GAME_COL_EXPANSION_STR, exp_abbr[x],
+	                   -1);
 
 	/* Read two-player advanced option */
 	x = get_integer(&ptr);
 
 	/* Set advanced option */
-	gtk_tree_store_set(game_list, &list_iter, 6, x, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_ADVANCED, x,
+	                   -1);
 
 	/* Read disable options */
 	x = get_integer(&ptr);
 	y = get_integer(&ptr);
 
 	/* Set disable options */
-	gtk_tree_store_set(game_list, &list_iter, 7, x, 8, y, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_DISABLE_GOAL, x,
+	                   GAME_COL_DISABLE_TO, y,
+	                   -1);
 
 	/* Read game speed option */
 	x = get_integer(&ptr);
 
 	/* Set speed option */
-	gtk_tree_store_set(game_list, &list_iter, 9, x, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_NO_TIMEOUT, x,
+	                   -1);
 
 	/* Read owner flag */
 	x = get_integer(&ptr);
 
 	/* Set owner information */
-	gtk_tree_store_set(game_list, &list_iter, 10, x, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_SELF, x,
+	                   -1);
+
+	/* Set weight of text */
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_WEIGHT, 400 + 400 * x,
+	                   -1);
 
 	/* Check for owner */
 	if (x && new_game)
@@ -482,11 +564,13 @@ static void handle_open_game(char *ptr)
 	}
 
 	/* Make checkboxes visible */
-	gtk_tree_store_set(game_list, &list_iter, 11, 1, -1);
+	gtk_tree_store_set(game_list, &list_iter,
+	                   GAME_COL_CHECK_VISIBLE, 1,
+	                   -1);
 
 	/* Sort game list by session ID */
-	gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(game_list), 0,
-	                                     GTK_SORT_ASCENDING);
+	gtk_tree_sortable_set_sort_column_id(
+		GTK_TREE_SORTABLE(game_list), GAME_COL_ID, GTK_SORT_ASCENDING);
 
 	/* Reset button state */
 	game_view_changed(GTK_TREE_VIEW(games_view), NULL);
@@ -499,6 +583,7 @@ static void handle_game_player(char *ptr)
 {
 	int x, y;
 	char buf[1024];
+	char *cmp_key;
 	GtkTreeIter list_iter, child_iter;
 
 	/* Read session ID */
@@ -537,10 +622,21 @@ static void handle_game_player(char *ptr)
 	}
 
 	/* Set player number */
-	gtk_tree_store_set(game_list, &child_iter, 0, y, -1);
+	gtk_tree_store_set(game_list, &child_iter,
+	                   GAME_COL_ID, y,
+	                   -1);
+
+	/* Create compare key */
+	cmp_key = create_cmp_key(buf);
 
 	/* Set username */
-	gtk_tree_store_set(game_list, &child_iter, 1, buf, -1);
+	gtk_tree_store_set(game_list, &child_iter,
+	                   GAME_COL_DESC_NAME, buf,
+	                   GAME_COL_DESC_NAME_CMP, cmp_key,
+	                   -1);
+
+	/* Destroy compare key */
+	g_free(cmp_key);
 
 	/* Get online status */
 	x = get_integer(&ptr);
@@ -548,17 +644,35 @@ static void handle_game_player(char *ptr)
 	/* Create online string */
 	strcpy(buf, x ? "" : "(offline)");
 
+	/* Create compare key */
+	cmp_key = create_cmp_key(buf);
+
 	/* Set online status */
-	gtk_tree_store_set(game_list, &child_iter, 2, buf, -1);
+	gtk_tree_store_set(game_list, &child_iter,
+	                   GAME_COL_CREATOR_OFFLINE, buf,
+	                   GAME_COL_CREATOR_CMP, cmp_key,
+	                   -1);
+
+	/* Destroy compare key */
+	g_free(cmp_key);
 
 	/* Get self flag */
 	x = get_integer(&ptr);
 
 	/* Store note of self */
-	gtk_tree_store_set(game_list, &child_iter, 10, x, -1);
+	gtk_tree_store_set(game_list, &child_iter,
+	                   GAME_COL_SELF, x,
+	                   -1);
+
+	/* Set weight */
+	gtk_tree_store_set(game_list, &child_iter,
+	                   GAME_COL_WEIGHT, 400 + 400 * x,
+	                   -1);
 
 	/* Make checkboxes invisible on this row */
-	gtk_tree_store_set(game_list, &child_iter, 11, 0, -1);
+	gtk_tree_store_set(game_list, &child_iter,
+	                   GAME_COL_CHECK_VISIBLE, 0,
+	                   -1);
 
 	/* Reset button state */
 	game_view_changed(GTK_TREE_VIEW(games_view), NULL);
@@ -579,8 +693,9 @@ static void handle_status_meta(char *ptr, int size)
 	real_game.goal_disabled = get_integer(&ptr);
 	real_game.takeover_disabled = get_integer(&ptr);
 
-	/* Clear campaign */
+	/* Clear local only flags */
 	real_game.camp = NULL;
+	real_game.promo = 0;
 
 	/* Initialize card designs for this expansion level */
 	init_game(&real_game);
@@ -917,7 +1032,7 @@ static void handle_choose(char *ptr)
 	making_choice = 1;
 
 	/* Notify gui */
-	gui_client_state_changed(playing_game, making_choice);
+	update_menu_items();
 
 	/* Ask player for decision */
 	gui_func.make_choice(&real_game, player_us, type, list, &num,
@@ -927,7 +1042,7 @@ static void handle_choose(char *ptr)
 	making_choice = 0;
 
 	/* Notify gui */
-	gui_client_state_changed(playing_game, making_choice);
+	update_menu_items();
 
 	/* Reset hand/table areas to default */
 	reset_cards(&real_game, TRUE, TRUE);
@@ -1083,7 +1198,7 @@ static void handle_prepare(char *ptr)
 	making_choice = 1;
 
 	/* Notify gui */
-	gui_client_state_changed(playing_game, making_choice);
+	update_menu_items();
 
 	/* Check phase */
 	switch (phase)
@@ -1137,7 +1252,7 @@ static void handle_prepare(char *ptr)
 	making_choice = 0;
 
 	/* Notify gui */
-	gui_client_state_changed(playing_game, making_choice);
+	update_menu_items();
 
 	/* Copy simulated game choice log to real game */
 	real_game.p[player_us].choice_size = sim.p[player_us].choice_size;
@@ -1163,12 +1278,13 @@ static gboolean message_read(gpointer data)
 	char *ptr = data;
 	int type, size;
 	char text[1024], format[1024], username[1024];
+	char *cmp_key;
 	GtkTreeIter list_iter;
 	GtkTextIter end_iter;
 	GtkTextMark *end_mark;
 	GtkTextBuffer *chat_buffer;
 	GtkWidget *dialog;
-	int x;
+	int x, y;
 
 	/* Read message type and size */
 	type = get_integer(&ptr);
@@ -1198,7 +1314,7 @@ static gboolean message_read(gpointer data)
 			client_state = CS_LOBBY;
 
 			/* Notify gui */
-			gui_client_state_changed(playing_game, making_choice);
+			update_menu_items();
 
 			/* Quit from main loop inside connection dialog */
 			gtk_main_quit();
@@ -1274,6 +1390,20 @@ static gboolean message_read(gpointer data)
 			/* Get in-game status */
 			x = get_integer(&ptr);
 
+			/* Check for self flag (since 0.9.4p) */
+			if (size > strlen(username) + 1 + 4 + 8)
+			{
+				/* Get self flag */
+				y = get_integer(&ptr);
+			}
+
+			/* Fall back */
+			else
+			{
+				/* Set self is same as most recent username */
+				y = !strcmp(username, opt.username);
+			}
+
 			/* Remove any matching users from list */
 			gtk_tree_model_foreach(GTK_TREE_MODEL(user_list),
 			                       delete_user, username);
@@ -1281,9 +1411,19 @@ static gboolean message_read(gpointer data)
 			/* Add row to list */
 			gtk_list_store_append(user_list, &list_iter);
 
-			/* Set name and status */
+			/* Get a compare key */
+			cmp_key = create_cmp_key(username);
+
+			/* Set name, status and weight */
 			gtk_list_store_set(user_list, &list_iter,
-			                   0, username, 1, x, -1);
+				PLAYER_COL_USERNAME, username,
+				PLAYER_COL_IN_GAME, x,
+				PLAYER_COL_USERNAME_CMP, cmp_key,
+				PLAYER_COL_WEIGHT, 400 + 400 * y,
+				-1);
+
+			/* Destroy compare key */
+			g_free(cmp_key);
 			break;
 
 		/* A player has left */
@@ -1384,8 +1524,7 @@ static gboolean message_read(gpointer data)
 			playing_game = 1;
 
 			/* Notify gui */
-			gui_client_state_changed(playing_game, making_choice);
-
+			update_menu_items();
 			break;
 
 		/* We have been removed from a game */
@@ -1611,7 +1750,7 @@ static gboolean message_read(gpointer data)
 			making_choice = 1;
 
 			/* Notify gui */
-			gui_client_state_changed(playing_game, making_choice);
+			update_menu_items();
 
 			/* Reset displayed cards */
 			reset_cards(&real_game, TRUE, TRUE);
@@ -1639,7 +1778,7 @@ static gboolean message_read(gpointer data)
 			making_choice = 0;
 
 			/* Notify gui */
-			gui_client_state_changed(playing_game, making_choice);
+			update_menu_items();
 
 			/* Check for disconnected */
 			if (client_state != CS_DISCONN)
@@ -1828,6 +1967,8 @@ void connect_dialog(GtkMenuItem *menu_item, gpointer data)
 	GtkWidget *label, *hsep;
 	GtkWidget *server, *port, *user, *pass;
 	GtkWidget *table;
+	GtkEntryCompletion *completion;
+	GtkTreeIter list_iter;
 	GtkTextBuffer *chat_buffer;
 	GIOChannel *io;
 	unsigned int id;
@@ -1873,6 +2014,26 @@ void connect_dialog(GtkMenuItem *menu_item, gpointer data)
 	/* Create label and text entry */
 	label = gtk_label_new("Server name:");
 	server = gtk_entry_new();
+
+	/* Create completion entry */
+	completion = gtk_entry_completion_new();
+
+	/* Set completion attributes */
+	g_object_set(G_OBJECT(completion),
+	             "inline-completion", TRUE,
+	             "minimum-key-length", 0,
+	             "popup-single-match", FALSE,
+	             NULL);
+
+	/* Use the only column in the server list as completion list */
+	gtk_entry_completion_set_model(completion, GTK_TREE_MODEL(opt.servers));
+	gtk_entry_completion_set_text_column(completion, 0);
+
+	/* Assign completion to server entry */
+	gtk_entry_set_completion(GTK_ENTRY(server), completion);
+
+	/* Remove our reference to the completion entry */
+	g_object_unref(G_OBJECT(completion));
 
 	/* Check for no server name in preferences */
 	if (!opt.server_name) opt.server_name = "keldon.net";
@@ -2144,7 +2305,7 @@ with the password you enter.");
 		client_state = CS_INIT;
 
 		/* Notify gui */
-		gui_client_state_changed(playing_game, making_choice);
+		update_menu_items();
 
 		/* Freeze server name/port once connection is established */
 		gtk_widget_set_sensitive(server, FALSE);
@@ -2152,6 +2313,25 @@ with the password you enter.");
 
 		/* Set status */
 		gtk_label_set_text(GTK_LABEL(login_status), "Sending login");
+
+		/* Remove any matching servers from the server list */
+		gtk_tree_model_foreach(GTK_TREE_MODEL(opt.servers),
+		                       delete_server, opt.server_name);
+
+		/* Save server name */
+		gtk_list_store_prepend(opt.servers, &list_iter);
+		gtk_list_store_set(opt.servers, &list_iter, 0, opt.server_name, -1);
+
+		/* Check for too many rows */
+		while (gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(opt.servers),
+		                                     &list_iter, NULL, 10))
+		{
+			/* Delete row */
+			gtk_list_store_remove(opt.servers, &list_iter);
+		}
+
+		/* Save change to file */
+		save_prefs();
 
 		/* Handle pending events */
 		while (gtk_events_pending()) gtk_main_iteration();
@@ -2212,7 +2392,7 @@ with the password you enter.");
 		client_state = CS_DISCONN;
 
 		/* Notify gui */
-		gui_client_state_changed(playing_game, making_choice);
+		update_menu_items();
 	}
 	else
 	{
@@ -2297,7 +2477,7 @@ static void disconnect(void)
 	playing_game = 0;
 
 	/* Notify gui */
-	gui_client_state_changed(playing_game, making_choice);
+	update_menu_items();
 
 	/* Quit from all nested main loops */
 	g_timeout_add(0, quit_from_main, NULL);
@@ -2357,31 +2537,54 @@ static GtkWidget *disable_goal_check;
 static GtkWidget *disable_takeover_check;
 
 /*
+ * Current selection for create game options
+ */
+static int next_exp;
+
+/*
+ * Update button sensitivities.
+ */
+static void update_sensitivity()
+{
+	int max_p;
+
+	/* Set goal disabled checkbox sensitivity */
+	gtk_widget_set_sensitive(disable_goal_check, next_exp > 0 && next_exp < 4);
+
+	/* Set takeover disabled checkbox sensitivity */
+	gtk_widget_set_sensitive(disable_takeover_check, next_exp > 1 && next_exp < 4);
+
+	/* Find maximum number of players */
+	max_p = next_exp + 4;
+	if (max_p > 6) max_p = 6;
+	if (next_exp == 4) max_p = 5;
+
+	/* Reduce value to the maximum */
+	if (gtk_range_get_value(GTK_RANGE(min_player)) > max_p)
+		gtk_range_set_value(GTK_RANGE(min_player), max_p);
+	if (gtk_range_get_value(GTK_RANGE(max_player)) > max_p)
+		gtk_range_set_value(GTK_RANGE(max_player), max_p);
+
+	/* Adjust scale widgets to new maximum */
+	gtk_range_set_range(GTK_RANGE(min_player), 2, max_p);
+	gtk_range_set_range(GTK_RANGE(max_player), 2, max_p);
+}
+
+/*
  * React to an expansion level being toggled.
  */
 static void exp_toggle(GtkToggleButton *button, gpointer data)
 {
 	int i = GPOINTER_TO_INT(data);
-	int max;
 
 	/* Check for button set */
 	if (gtk_toggle_button_get_active(button))
 	{
-		/* Set maximum number of players */
-		max = i + 4;
-		if (max > 6) max = 6;
-		if (i == 4) max = 5;
+		/* Remember next expansion level */
+		next_exp = i;
 
-		/* Adjust scale widgets to new maximum */
-		gtk_range_set_range(GTK_RANGE(min_player), 2, max);
-		gtk_range_set_range(GTK_RANGE(max_player), 2, max);
-
-		/* Set goal disabled checkbox sensitivity */
-		gtk_widget_set_sensitive(disable_goal_check, i > 0 && i < 4);
-
-		/* Set takeover disabled checkbox sensitivity */
-		gtk_widget_set_sensitive(disable_takeover_check, i > 1 &&
-		                                                 i < 4);
+		/* Update sensitivites */
+		update_sensitivity();
 	}
 }
 
@@ -2431,9 +2634,11 @@ void create_dialog(GtkButton *button, gpointer data)
 	GtkWidget *dialog;
 	GtkWidget *radio[MAX_EXPANSION];
 	GtkWidget *table, *label;
-	GtkWidget *exp_box, *exp_frame;
 	GtkWidget *desc, *pass;
-	int i, exp = 0;
+	GtkWidget *exp_box, *exp_frame;
+	GtkWidget *player_box, *player_frame;
+	GtkWidget *options_box, *options_frame;
+	int i;
 
 	/* Create dialog box */
 	dialog = gtk_dialog_new_with_buttons("Create Game", NULL,
@@ -2444,7 +2649,7 @@ void create_dialog(GtkButton *button, gpointer data)
 	                                     GTK_RESPONSE_REJECT, NULL);
 
 	/* Create a table for laying out widgets */
-	table = gtk_table_new(8, 2, FALSE);
+	table = gtk_table_new(2, 2, FALSE);
 
 	/* Create label and text entry for game description */
 	label = gtk_label_new("Description:");
@@ -2486,6 +2691,9 @@ void create_dialog(GtkButton *button, gpointer data)
 	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 1, 2);
 	gtk_table_attach_defaults(GTK_TABLE(table), pass, 1, 2, 1, 2);
 
+	/* Add table to dialog box */
+	gtk_container_add(GTK_CONTAINER(GTK_DIALOG(dialog)->vbox), table);
+
 	/* Create vbox to hold expansion selection radio buttons */
 	exp_box = gtk_vbox_new(FALSE, 0);
 
@@ -2500,6 +2708,16 @@ void create_dialog(GtkButton *button, gpointer data)
 		                                     GTK_RADIO_BUTTON(radio[0]),
 		                                     exp_names[i]);
 
+		/* Check for current expansion level */
+		if (opt.expanded == i)
+		{
+			/* Set button active */
+			gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radio[i]), TRUE);
+
+			/* Remember current expansion */
+			next_exp = i;
+		}
+
 		/* Add handler */
 		g_signal_connect(G_OBJECT(radio[i]), "toggled",
 		                 G_CALLBACK(exp_toggle), GINT_TO_POINTER(i));
@@ -2509,37 +2727,70 @@ void create_dialog(GtkButton *button, gpointer data)
 	}
 
 	/* Create frame around buttons */
-	exp_frame = gtk_frame_new("Choose expansion level");
+	exp_frame = gtk_frame_new("Expansion level");
 
-	/* Pack vbox into frame */
+	/* Pack radio button box into frame */
 	gtk_container_add(GTK_CONTAINER(exp_frame), exp_box);
 
-	/* Add expansion frame to table */
-	gtk_table_attach_defaults(GTK_TABLE(table), exp_frame, 0, 2, 2, 3);
+	/* Add expansion frame to dialog box */
+	gtk_container_add(GTK_CONTAINER(GTK_DIALOG(dialog)->vbox), exp_frame);
+
+	/* Create a table for laying out player number widgets */
+	table = gtk_table_new(2, 2, FALSE);
 
 	/* Create label and scale for minimum number of players */
 	label = gtk_label_new("Minimum players:");
-	min_player = gtk_hscale_new_with_range(2, 4, 1);
+	min_player = gtk_hscale_new_with_range(2, 6, 1);
+
+	/* Set request size */
+	gtk_widget_set_size_request(min_player, 120, -1);
 
 	/* Add handler */
 	g_signal_connect(G_OBJECT(min_player), "value-changed",
 	                 G_CALLBACK(player_changed), GINT_TO_POINTER(0));
 
+	/* Set default value */
+	gtk_range_set_value(GTK_RANGE(min_player), opt.multi_min);
+
 	/* Add widgets to table */
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 3, 4);
-	gtk_table_attach_defaults(GTK_TABLE(table), min_player, 1, 2, 3, 4);
+	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 0, 1);
+	gtk_table_attach_defaults(GTK_TABLE(table), min_player, 1, 2, 0, 1);
 
 	/* Create label and scale for maximum number of players */
 	label = gtk_label_new("Maximum players:");
-	max_player = gtk_hscale_new_with_range(2, 4, 1);
+	max_player = gtk_hscale_new_with_range(2, 6, 1);
+
+	/* Set request size */
+	gtk_widget_set_size_request(max_player, 120, -1);
 
 	/* Add handler */
 	g_signal_connect(G_OBJECT(max_player), "value-changed",
 	                 G_CALLBACK(player_changed), GINT_TO_POINTER(1));
 
+	/* Set default value */
+	gtk_range_set_value(GTK_RANGE(max_player), opt.multi_max);
+
 	/* Add widgets to table */
-	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 4, 5);
-	gtk_table_attach_defaults(GTK_TABLE(table), max_player, 1, 2, 4, 5);
+	gtk_table_attach_defaults(GTK_TABLE(table), label, 0, 1, 1, 2);
+	gtk_table_attach_defaults(GTK_TABLE(table), max_player, 1, 2, 1, 2);
+
+	/* Create vbox to hold player selection table */
+	player_box = gtk_vbox_new(FALSE, 0);
+
+	/* Pack table into box */
+	gtk_box_pack_start(GTK_BOX(player_box), table, FALSE, TRUE, 0);
+
+	/* Create frame around buttons */
+	player_frame = gtk_frame_new("Number of players");
+
+	/* Pack player box into frame */
+	gtk_container_add(GTK_CONTAINER(player_frame), player_box);
+
+	/* Add frame to dialog box */
+	gtk_container_add(GTK_CONTAINER(GTK_DIALOG(dialog)->vbox), player_frame);
+
+	/* Create vbox to hold options widgets */
+	options_box = gtk_vbox_new(FALSE, 0);
 
 	/* Create check box for two-player advanced game */
 	advanced_check = gtk_check_button_new_with_label("Two-player advanced");
@@ -2548,8 +2799,8 @@ void create_dialog(GtkButton *button, gpointer data)
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(advanced_check),
 	                             opt.advanced);
 
-	/* Add checkbox to table */
-	gtk_table_attach_defaults(GTK_TABLE(table), advanced_check, 0, 2, 5, 6);
+	/* Add checkbox to options box */
+	gtk_container_add(GTK_CONTAINER(options_box), advanced_check);
 
 	/* Create check box for disabled goals */
 	disable_goal_check = gtk_check_button_new_with_label("Disable goals");
@@ -2558,12 +2809,8 @@ void create_dialog(GtkButton *button, gpointer data)
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(disable_goal_check),
 	                             opt.disable_goal);
 
-	/* Make checkbox insensitive */
-	gtk_widget_set_sensitive(disable_goal_check, FALSE);
-
-	/* Add checkbox to table */
-	gtk_table_attach_defaults(GTK_TABLE(table), disable_goal_check,
-	                          0, 2, 6, 7);
+	/* Add checkbox to options box */
+	gtk_container_add(GTK_CONTAINER(options_box), disable_goal_check);
 
 	/* Create check box for disabled takeovers */
 	disable_takeover_check =
@@ -2573,27 +2820,20 @@ void create_dialog(GtkButton *button, gpointer data)
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(disable_takeover_check),
 	                             opt.disable_takeover);
 
-	/* Make checkbox insensitive */
-	gtk_widget_set_sensitive(disable_takeover_check, FALSE);
+	/* Add checkbox to options box */
+	gtk_container_add(GTK_CONTAINER(options_box), disable_takeover_check);
 
-	/* Add checkbox to table */
-	gtk_table_attach_defaults(GTK_TABLE(table), disable_takeover_check,
-	                          0, 2, 7, 8);
+	/* Create frame around buttons */
+	options_frame = gtk_frame_new("Game options");
 
-	/* Add table to dialog box */
-	gtk_container_add(GTK_CONTAINER(GTK_DIALOG(dialog)->vbox), table);
+	/* Add options box to options frame */
+	gtk_container_add(GTK_CONTAINER(options_frame), options_box);
 
-	/* Loop over expansion levels */
-	for (i = 0; exp_names[i]; i++)
-	{
-		/* Select radio button if needed */
-		gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(radio[i]),
-		                             i == opt.expanded);
-	}
+	/* Add frame to dialog box */
+	gtk_container_add(GTK_CONTAINER(GTK_DIALOG(dialog)->vbox), options_frame);
 
-	/* Set default values */
-	gtk_range_set_value(GTK_RANGE(min_player), opt.multi_min);
-	gtk_range_set_value(GTK_RANGE(max_player), opt.multi_max);
+	/* Update sensitivities */
+	update_sensitivity();
 
 	/* Show all widgets */
 	gtk_widget_show_all(dialog);
@@ -2608,18 +2848,8 @@ void create_dialog(GtkButton *button, gpointer data)
 		return;
 	}
 
-	/* Loop over expansion radio buttons */
-	for (i = 0; i < MAX_EXPANSION; i++)
-	{
-		/* Check for selected button */
-		if (gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(radio[i])))
-		{
-			/* Set expansion level */
-			opt.expanded = exp = i;
-		}
-	}
-
 	/* Save options for later */
+	opt.expanded = next_exp;
 	opt.game_desc = strdup(gtk_entry_get_text(GTK_ENTRY(desc)));
 	opt.game_pass = strdup(gtk_entry_get_text(GTK_ENTRY(pass)));
 	opt.multi_min = (int)gtk_range_get_value(GTK_RANGE(min_player));
@@ -2640,7 +2870,7 @@ void create_dialog(GtkButton *button, gpointer data)
 	          gtk_entry_get_text(GTK_ENTRY(desc)),
 	          (int)gtk_range_get_value(GTK_RANGE(min_player)),
 	          (int)gtk_range_get_value(GTK_RANGE(max_player)),
-	          exp,
+	          next_exp,
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(advanced_check)),
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(disable_goal_check)),
         gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(disable_takeover_check)),
@@ -2704,7 +2934,7 @@ void resign_game(GtkMenuItem *menu_item, gpointer data)
 	playing_game = 0;
 
 	/* Notify gui */
-	gui_client_state_changed(playing_game, making_choice);
+	update_menu_items();
 
 	/* Switch back to lobby view */
 	switch_view(1, 1);
@@ -2750,8 +2980,10 @@ void join_game(GtkButton *button, gpointer data)
 	}
 
 	/* Get session ID of game to join */
-	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &parent_iter, 0, &x,
-	                   3, &pass_needed, -1);
+	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &parent_iter,
+	                   GAME_COL_ID, &x,
+	                   GAME_COL_PASSWORD, &pass_needed,
+	                   -1);
 
 	/* Check for password required */
 	if (pass_needed)
@@ -2849,11 +3081,15 @@ void kick_player(GtkButton *button, gpointer data)
 	}
 
 	/* Get session ID of game */
-	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &parent_iter, 0, &x, -1);
+	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &parent_iter,
+	                   GAME_COL_ID, &x,
+	                   -1);
 
 	/* Get name of user to kick */
-	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &game_iter, 1, &buf,
-	                   10, &self, -1);
+	gtk_tree_model_get(GTK_TREE_MODEL(game_list), &game_iter,
+	                   GAME_COL_DESC_NAME, &buf,
+	                   GAME_COL_SELF, &self,
+	                   -1);
 
 	/* Check for self selected */
 	if (self) return;

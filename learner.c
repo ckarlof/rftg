@@ -1,9 +1,9 @@
 /*
  * Race for the Galaxy AI
  *
- * Copyright (C) 2009-2011 Keldon Jones
+ * Copyright (C) 2009-2015 Keldon Jones
  *
- * Source file modified by B. Nordli, August 2014.
+ * Source file modified by B. Nordli, August 2015.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -193,6 +193,9 @@ int main(int argc, char *argv[])
 	{
 		/* Initialize game */
 		init_game(&my_game);
+
+		/* Game is learning game */
+		my_game.session_id = -2;
 
 		printf("Start seed: %u\n", my_game.start_seed);
 
